@@ -7535,7 +7535,6 @@ final class TerminalNotificationDirectInteractionTests: XCTestCase {
         AppFocusState.overrideIsFocused = true
         XCTAssertTrue(window.makeFirstResponder(surfaceView))
 
-        AppFocusState.overrideIsFocused = false
         store.addNotification(
             tabId: workspace.id,
             surfaceId: terminalPanel.id,
