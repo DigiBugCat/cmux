@@ -1958,8 +1958,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var didSetupGotoSplitUITest = false
     private var gotoSplitUITestObservers: [NSObjectProtocol] = []
     private var didSetupMultiWindowNotificationsUITest = false
+    private var didSetupMovedBrowserWindowUITest = false
+    private var movedBrowserWindowUITestSnapshotTimer: DispatchSourceTimer?
     // Keep debug-only windows alive when tests intentionally inject key mismatches.
     private var debugDetachedContextWindows: [NSWindow] = []
+
+    private struct MovedBrowserWindowUITestContext {
+        let path: String
+        let sourceWindowId: UUID
+        let destinationWindowId: UUID
+        let movedWorkspaceId: UUID
+        let browserPanelId: UUID
+    }
 
     private func childExitKeyboardProbePath() -> String? {
         let env = ProcessInfo.processInfo.environment
@@ -2332,6 +2342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self.setupSocketSanityUITestIfNeeded()
             self.setupGotoSplitUITestIfNeeded()
             self.setupMultiWindowNotificationsUITestIfNeeded()
+            self.setupMovedBrowserWindowUITestIfNeeded()
         }
 
         // UI tests sometimes don't run SwiftUI `.onAppear` soon enough (or at all) on the VM.
@@ -7124,6 +7135,192 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func loadSocketSanityTestData(at path: String) -> [String: String] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+            return [:]
+        }
+        return object
+    }
+
+    private func setupMovedBrowserWindowUITestIfNeeded() {
+        guard !didSetupMovedBrowserWindowUITest else { return }
+        didSetupMovedBrowserWindowUITest = true
+
+        let env = ProcessInfo.processInfo.environment
+        guard env["CMUX_UI_TEST_MOVED_BROWSER_WINDOW_SETUP"] == "1" else { return }
+        guard let path = env["CMUX_UI_TEST_MOVED_BROWSER_WINDOW_PATH"], !path.isEmpty else { return }
+
+        try? FileManager.default.removeItem(atPath: path)
+        writeMovedBrowserWindowUITestData([
+            "setupReady": "pending",
+            "setupError": "",
+        ], at: path)
+
+        let deadline = Date().addingTimeInterval(8.0)
+        func waitForInitialContext(_ completion: @escaping (MainWindowContext) -> Void) {
+            if let context = mainWindowContexts.values.first(where: { $0.window != nil || windowForMainWindowId($0.windowId) != nil }) {
+                completion(context)
+                return
+            }
+            guard Date() < deadline else {
+                failMovedBrowserWindowUITest(at: path, reason: "missing_source_window")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                waitForInitialContext(completion)
+            }
+        }
+
+        waitForInitialContext { [weak self] sourceContext in
+            self?.buildMovedBrowserWindowUITestScenario(from: sourceContext, at: path)
+        }
+    }
+
+    private func buildMovedBrowserWindowUITestScenario(from sourceContext: MainWindowContext, at path: String) {
+        _ = focusMainWindow(windowId: sourceContext.windowId)
+        TerminalController.shared.setActiveTabManager(sourceContext.tabManager)
+
+        let movedWorkspace = sourceContext.tabManager.addWorkspace(
+            select: true,
+            autoWelcomeIfNeeded: false
+        )
+        guard let browserPanelId = sourceContext.tabManager.openBrowser(url: URL(string: "about:blank")) else {
+            failMovedBrowserWindowUITest(at: path, reason: "open_browser_failed")
+            return
+        }
+        guard let destinationWindowId = moveWorkspaceToNewWindow(workspaceId: movedWorkspace.id) else {
+            failMovedBrowserWindowUITest(at: path, reason: "move_workspace_to_new_window_failed")
+            return
+        }
+
+        let context = MovedBrowserWindowUITestContext(
+            path: path,
+            sourceWindowId: sourceContext.windowId,
+            destinationWindowId: destinationWindowId,
+            movedWorkspaceId: movedWorkspace.id,
+            browserPanelId: browserPanelId
+        )
+        publishMovedBrowserWindowUITestSnapshot(context, setupReady: "pending")
+        finishMovedBrowserWindowUITestSetup(context, attempt: 0)
+    }
+
+    private func finishMovedBrowserWindowUITestSetup(_ context: MovedBrowserWindowUITestContext, attempt: Int) {
+        let maxAttempts = 160
+        guard attempt < maxAttempts else {
+            failMovedBrowserWindowUITest(at: context.path, reason: "timed_out_waiting_for_destination_browser_focus")
+            return
+        }
+
+        guard let destinationManager = tabManagerFor(windowId: context.destinationWindowId),
+              let destinationWorkspace = destinationManager.tabs.first(where: { $0.id == context.movedWorkspaceId }),
+              let browserPanel = destinationWorkspace.browserPanel(for: context.browserPanelId),
+              let destinationWindow = mainWindow(for: context.destinationWindowId) else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.finishMovedBrowserWindowUITestSetup(context, attempt: attempt + 1)
+            }
+            return
+        }
+
+        _ = focusMainWindow(windowId: context.destinationWindowId)
+        destinationManager.focusTab(context.movedWorkspaceId, surfaceId: context.browserPanelId, suppressFlash: true)
+        destinationWorkspace.focusPanel(context.browserPanelId)
+        _ = destinationWindow.makeFirstResponder(browserPanel.webView)
+
+        let sourceWorkspaceCount = tabManagerFor(windowId: context.sourceWindowId)?.tabs.count ?? 0
+        let isReady =
+            destinationWindow.isKeyWindow
+            && destinationManager.selectedTabId == context.movedWorkspaceId
+            && sourceWorkspaceCount == 1
+            && destinationManager.tabs.count == 1
+            && isWebViewFocused(browserPanel)
+
+        if isReady {
+            startMovedBrowserWindowUITestSnapshotTimer(context)
+            publishMovedBrowserWindowUITestSnapshot(context, setupReady: "1")
+            return
+        }
+
+        publishMovedBrowserWindowUITestSnapshot(context, setupReady: "pending")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.finishMovedBrowserWindowUITestSetup(context, attempt: attempt + 1)
+        }
+    }
+
+    private func startMovedBrowserWindowUITestSnapshotTimer(_ context: MovedBrowserWindowUITestContext) {
+        movedBrowserWindowUITestSnapshotTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(50), leeway: .milliseconds(10))
+        timer.setEventHandler { [weak self] in
+            self?.publishMovedBrowserWindowUITestSnapshot(context, setupReady: "1")
+        }
+        movedBrowserWindowUITestSnapshotTimer = timer
+        timer.resume()
+    }
+
+    private func publishMovedBrowserWindowUITestSnapshot(
+        _ context: MovedBrowserWindowUITestContext,
+        setupReady: String
+    ) {
+        let sourceManager = tabManagerFor(windowId: context.sourceWindowId)
+        let destinationManager = tabManagerFor(windowId: context.destinationWindowId)
+        let destinationWorkspace = destinationManager?.tabs.first(where: { $0.id == context.movedWorkspaceId })
+        let browserPanel = destinationWorkspace?.browserPanel(for: context.browserPanelId)
+        let sourceWindow = mainWindow(for: context.sourceWindowId)
+        let destinationWindow = mainWindow(for: context.destinationWindowId)
+        let windowSummaries = listMainWindowSummaries()
+        let windowSummary = windowSummaries
+            .sorted { $0.windowId.uuidString < $1.windowId.uuidString }
+            .map { summary in
+                [
+                    "id=\(summary.windowId.uuidString)",
+                    "key=\(summary.isKeyWindow ? 1 : 0)",
+                    "count=\(summary.workspaceCount)",
+                    "selected=\(summary.selectedWorkspaceId?.uuidString ?? "")"
+                ].joined(separator: " ")
+            }
+            .joined(separator: "; ")
+
+        writeMovedBrowserWindowUITestData([
+            "setupReady": setupReady,
+            "setupError": "",
+            "windowCount": String(windowSummaries.count),
+            "windowSummary": windowSummary,
+            "sourceWindowId": context.sourceWindowId.uuidString,
+            "destinationWindowId": context.destinationWindowId.uuidString,
+            "movedWorkspaceId": context.movedWorkspaceId.uuidString,
+            "browserPanelId": context.browserPanelId.uuidString,
+            "sourceWorkspaceCount": sourceManager.map { String($0.tabs.count) } ?? "",
+            "destinationWorkspaceCount": destinationManager.map { String($0.tabs.count) } ?? "",
+            "sourceSelectedWorkspaceId": sourceManager?.selectedTabId?.uuidString ?? "",
+            "destinationSelectedWorkspaceId": destinationManager?.selectedTabId?.uuidString ?? "",
+            "sourceIsKeyWindow": sourceWindow?.isKeyWindow == true ? "1" : "0",
+            "destinationIsKeyWindow": destinationWindow?.isKeyWindow == true ? "1" : "0",
+            "destinationSurfaceCount": destinationWorkspace.map { String($0.panels.count) } ?? "",
+            "browserPanelPresent": browserPanel == nil ? "0" : "1",
+            "webViewFocused": browserPanel.map { isWebViewFocused($0) ? "true" : "false" } ?? "false",
+            "focusedPanelId": destinationWorkspace?.focusedPanelId?.uuidString ?? "",
+        ], at: context.path)
+    }
+
+    private func failMovedBrowserWindowUITest(at path: String, reason: String) {
+        movedBrowserWindowUITestSnapshotTimer?.cancel()
+        movedBrowserWindowUITestSnapshotTimer = nil
+        writeMovedBrowserWindowUITestData([
+            "setupReady": "0",
+            "setupError": reason,
+        ], at: path)
+    }
+
+    private func writeMovedBrowserWindowUITestData(_ updates: [String: String], at path: String) {
+        var payload = loadMovedBrowserWindowUITestData(at: path)
+        for (key, value) in updates {
+            payload[key] = value
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    private func loadMovedBrowserWindowUITestData(at path: String) -> [String: String] {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
             return [:]
