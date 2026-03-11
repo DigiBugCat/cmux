@@ -5874,6 +5874,46 @@ final class BrowserPanelAddressBarFocusRequestTests: XCTestCase {
     }
 }
 
+@MainActor
+final class BrowserPanelSearchFocusLeaseTests: XCTestCase {
+    func testOrdinaryBrowserFocusChangesDoNotStartFindFocusLease() {
+        let panel = BrowserPanel(workspaceId: UUID())
+
+        XCTAssertEqual(panel.searchFocusRequestGeneration, 0)
+
+        panel.noteWebViewFocused()
+        XCTAssertEqual(panel.searchFocusRequestGeneration, 0)
+
+        let requestId = panel.requestAddressBarFocus()
+        XCTAssertNotNil(panel.pendingAddressBarFocusRequestId)
+        XCTAssertEqual(panel.searchFocusRequestGeneration, 0)
+
+        panel.noteAddressBarFocused()
+        XCTAssertEqual(panel.searchFocusRequestGeneration, 0)
+
+        panel.acknowledgeAddressBarFocusRequest(requestId)
+        XCTAssertNil(panel.pendingAddressBarFocusRequestId)
+        XCTAssertEqual(panel.searchFocusRequestGeneration, 0)
+
+        panel.prepareFocusIntentForActivation(.browser(.webView))
+        XCTAssertEqual(panel.searchFocusRequestGeneration, 0)
+    }
+
+    func testFindFocusLeaseStillInvalidatesWhenLeavingFind() {
+        let panel = BrowserPanel(workspaceId: UUID())
+
+        panel.startFind()
+        let generationBeforeAddressBarRequest = panel.searchFocusRequestGeneration
+        XCTAssertGreaterThan(generationBeforeAddressBarRequest, 0)
+
+        _ = panel.requestAddressBarFocus()
+        XCTAssertEqual(panel.searchFocusRequestGeneration, generationBeforeAddressBarRequest + 1)
+
+        panel.hideFind()
+        XCTAssertGreaterThan(panel.searchFocusRequestGeneration, generationBeforeAddressBarRequest + 1)
+    }
+}
+
 final class SidebarDropPlannerTests: XCTestCase {
     func testNoIndicatorForNoOpEdges() {
         let first = UUID()
