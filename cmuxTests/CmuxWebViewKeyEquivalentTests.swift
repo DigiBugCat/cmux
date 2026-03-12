@@ -3545,6 +3545,108 @@ final class GhosttyResponderResolutionTests: XCTestCase {
     }
 }
 
+@MainActor
+final class TerminalFindShortcutRoutingTests: XCTestCase {
+    private final class ActionSpy: NSObject {
+        var invocationCount = 0
+
+        @objc func didInvoke(_ sender: Any?) {
+            invocationCount += 1
+        }
+    }
+
+    private func installMenu(spy: ActionSpy) {
+        let mainMenu = NSMenu()
+        let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        let findMenu = NSMenu(title: "Find")
+
+        let item = NSMenuItem(title: "Find…", action: #selector(ActionSpy.didInvoke(_:)), keyEquivalent: "f")
+        item.keyEquivalentModifierMask = [.command]
+        item.target = spy
+        findMenu.addItem(item)
+
+        mainMenu.addItem(findItem)
+        mainMenu.setSubmenu(findMenu, for: findItem)
+
+        _ = NSApplication.shared
+        NSApp.mainMenu = mainMenu
+    }
+
+    private func terminalSurfaceView(in hostedView: GhosttySurfaceScrollView) -> GhosttyNSView? {
+        var stack: [NSView] = [hostedView]
+        while let current = stack.popLast() {
+            if let surfaceView = current as? GhosttyNSView {
+                return surfaceView
+            }
+            stack.append(contentsOf: current.subviews)
+        }
+        return nil
+    }
+
+    func testCommandFFiresMenuShortcutBeforeGhosttyBinding() {
+        let previousMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMenu }
+
+        let spy = ActionSpy()
+        installMenu(spy: spy)
+
+        let surface = TerminalSurface(
+            tabId: UUID(),
+            context: GHOSTTY_SURFACE_CONTEXT_SPLIT,
+            configTemplate: nil,
+            workingDirectory: nil
+        )
+        let hostedView = surface.hostedView
+        guard let surfaceView = terminalSurfaceView(in: hostedView) else {
+            XCTFail("Expected Ghostty surface view")
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 240),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+        hostedView.frame = contentView.bounds
+        hostedView.autoresizingMask = [.width, .height]
+        contentView.addSubview(hostedView)
+
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        contentView.layoutSubtreeIfNeeded()
+        hostedView.setVisibleInUI(true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertTrue(window.makeFirstResponder(surfaceView), "Expected terminal to be first responder")
+
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "f",
+            charactersIgnoringModifiers: "f",
+            isARepeat: false,
+            keyCode: 3
+        ) else {
+            XCTFail("Expected Cmd-F event")
+            return
+        }
+
+        XCTAssertTrue(surfaceView.performKeyEquivalent(with: event))
+        XCTAssertEqual(spy.invocationCount, 1, "Cmd-F should fire the app menu before Ghostty bindings")
+    }
+}
+
 final class CommandPaletteKeyboardNavigationTests: XCTestCase {
     func testArrowKeysMoveSelectionWithoutModifiers() {
         XCTAssertEqual(
