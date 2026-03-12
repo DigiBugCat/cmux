@@ -1476,7 +1476,53 @@ final class ZshShellIntegrationHandoffTests: XCTestCase {
         XCTAssertTrue(output.contains("PREEXEC=0"), output)
     }
 
-    private func runInteractiveZsh(cmuxLoadGhosttyIntegration: Bool) throws -> String {
+    func testCmuxTakesOverGhosttyPromptHooksAfterDeferredInit() throws {
+        let output = try runInteractiveZsh(
+            cmuxLoadGhosttyIntegration: true,
+            cmuxShellIntegration: true,
+            command:
+                "(( $+functions[_ghostty_deferred_init] )) && _ghostty_deferred_init >/dev/null 2>&1; " +
+                "(( $+functions[_cmux_take_over_ghostty_prompt_hooks] )) && _cmux_take_over_ghostty_prompt_hooks >/dev/null 2>&1; " +
+                "typeset -i ps1HasA=0 ps1HasB=0; " +
+                "[[ $PS1 == *$'%{\\e]133;A'* ]] && ps1HasA=1; " +
+                "[[ $PS1 == *$'%{\\e]133;B'* ]] && ps1HasB=1; " +
+                "print -r -- \"TAKEOVER=${_CMUX_GHOSTTY_PROMPT_TAKEOVER:-0} PRECMD=${+functions[_ghostty_precmd]} " +
+                "PREEXEC=${+functions[_ghostty_preexec]} PWD=${+functions[_ghostty_report_pwd]} " +
+                "PRECMDS=${(j:,:)precmd_functions} PREEXECS=${(j:,:)preexec_functions} " +
+                "PS1A=${ps1HasA} PS1B=${ps1HasB}\""
+        )
+
+        XCTAssertTrue(output.contains("TAKEOVER=1"), output)
+        XCTAssertTrue(output.contains("PRECMD=1"), output)
+        XCTAssertTrue(output.contains("PREEXEC=1"), output)
+        XCTAssertTrue(output.contains("PWD=1"), output)
+        XCTAssertTrue(output.contains("PS1A=0"), output)
+        XCTAssertTrue(output.contains("PS1B=0"), output)
+        XCTAssertFalse(output.contains("_ghostty_precmd"), output)
+        XCTAssertFalse(output.contains("_ghostty_preexec"), output)
+    }
+
+    func testCmuxGhosttyPromptTakeoverEmitsSemanticPromptMarkersDirectly() throws {
+        let output = try runInteractiveZsh(
+            cmuxLoadGhosttyIntegration: true,
+            cmuxShellIntegration: true,
+            command:
+                "(( $+functions[_ghostty_deferred_init] )) && _ghostty_deferred_init >/dev/null 2>&1; " +
+                "(( $+functions[_cmux_take_over_ghostty_prompt_hooks] )) && _cmux_take_over_ghostty_prompt_hooks >/dev/null 2>&1; " +
+                "unfunction _ghostty_report_pwd >/dev/null 2>&1 || true; " +
+                "_ghostty_fd=1; _ghostty_state=0; " +
+                "_cmux_ghostty_precmd 0; _cmux_ghostty_preexec 'echo hi'"
+        )
+
+        XCTAssertTrue(output.contains("\u{001B}]133;A;cl=line\u{0007}"), output)
+        XCTAssertTrue(output.contains("\u{001B}]133;C\u{0007}"), output)
+    }
+
+    private func runInteractiveZsh(
+        cmuxLoadGhosttyIntegration: Bool,
+        cmuxShellIntegration: Bool = false,
+        command: String? = nil
+    ) throws -> String {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
             .appendingPathComponent("cmux-zsh-shell-integration-\(UUID().uuidString)")
@@ -1498,9 +1544,10 @@ final class ZshShellIntegrationHandoffTests: XCTestCase {
         process.arguments = [
             "-i",
             "-c",
-            "(( $+functions[_ghostty_deferred_init] )) && _ghostty_deferred_init >/dev/null 2>&1; " +
-            "print -r -- \"PRECMD=${+functions[_ghostty_precmd]} " +
-            "PREEXEC=${+functions[_ghostty_preexec]} PRECMDS=${(j:,:)precmd_functions}\""
+            command ??
+                "(( $+functions[_ghostty_deferred_init] )) && _ghostty_deferred_init >/dev/null 2>&1; " +
+                "print -r -- \"PRECMD=${+functions[_ghostty_precmd]} " +
+                "PREEXEC=${+functions[_ghostty_preexec]} PRECMDS=${(j:,:)precmd_functions}\""
         ]
         process.environment = [
             "HOME": root.path,
@@ -1509,8 +1556,12 @@ final class ZshShellIntegrationHandoffTests: XCTestCase {
             "USER": NSUserName(),
             "ZDOTDIR": cmuxZdotdir.path,
             "CMUX_ZSH_ZDOTDIR": userZdotdir.path,
-            "CMUX_SHELL_INTEGRATION": "0",
+            "CMUX_SHELL_INTEGRATION": cmuxShellIntegration ? "1" : "0",
+            "CMUX_SHELL_INTEGRATION_DIR": cmuxZdotdir.path,
             "GHOSTTY_RESOURCES_DIR": ghosttyResources.path,
+            "CMUX_SOCKET_PATH": "/tmp/cmux-zsh-shell-integration.sock",
+            "CMUX_TAB_ID": UUID().uuidString,
+            "CMUX_PANEL_ID": UUID().uuidString,
         ]
         if cmuxLoadGhosttyIntegration {
             process.environment?["CMUX_LOAD_GHOSTTY_ZSH_INTEGRATION"] = "1"
