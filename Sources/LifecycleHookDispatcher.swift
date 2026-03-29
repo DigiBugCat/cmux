@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 /// Dispatches lifecycle hooks stored in the tmux-compat store.
 ///
@@ -40,13 +41,41 @@ enum LifecycleHookDispatcher {
         workspaceId: String? = nil,
         environment: [String: String] = [:]
     ) {
-        guard let command = loadHook(for: event) else { return }
         dispatchQueue.async {
+            guard let command = loadHook(for: event) else { return }
             executeShellCommand(command, event: event, workspaceId: workspaceId, environment: environment)
         }
     }
 
+    /// Fire the hook for `event` synchronously with a bounded wait.
+    /// Use this for shutdown hooks where the process may exit immediately after.
+    static func dispatchSync(
+        _ event: String,
+        workspaceId: String? = nil,
+        environment: [String: String] = [:],
+        timeout: DispatchTime = .now() + 5
+    ) {
+        guard let command = loadHook(for: event) else { return }
+        let semaphore = DispatchSemaphore(value: 0)
+        dispatchQueue.async {
+            executeShellCommand(
+                command,
+                event: event,
+                workspaceId: workspaceId,
+                environment: environment,
+                waitForExit: true
+            )
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: timeout)
+    }
+
     // MARK: - Internals
+
+    private static let log = OSLog(
+        subsystem: "com.cmuxterm.app",
+        category: "LifecycleHooks"
+    )
 
     private static let dispatchQueue = DispatchQueue(
         label: "com.cmuxterm.app.lifecycleHooks",
@@ -78,19 +107,24 @@ enum LifecycleHookDispatcher {
         _ command: String,
         event: String,
         workspaceId: String?,
-        environment: [String: String]
+        environment: [String: String],
+        waitForExit: Bool = false
     ) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", command]
 
+        // Apply caller environment first, then set reserved keys so they
+        // cannot be overwritten.
         var env = ProcessInfo.processInfo.environment
+        for (key, value) in environment {
+            env[key] = value
+        }
         env["CMUX_HOOK_EVENT"] = event
         if let workspaceId {
             env["CMUX_HOOK_WORKSPACE_ID"] = workspaceId
-        }
-        for (key, value) in environment {
-            env[key] = value
+        } else {
+            env.removeValue(forKey: "CMUX_HOOK_WORKSPACE_ID")
         }
         process.environment = env
 
@@ -99,11 +133,17 @@ enum LifecycleHookDispatcher {
 
         do {
             try process.run()
-            // Fire-and-forget — don't waitUntilExit on the dispatch queue.
+            if waitForExit {
+                process.waitUntilExit()
+            }
         } catch {
-            #if DEBUG
-            NSLog("[LifecycleHookDispatcher] Failed to run hook '\(event)': \(error.localizedDescription)")
-            #endif
+            os_log(
+                .error,
+                log: self.log,
+                "Failed to run hook '%{public}@': %{public}@",
+                event,
+                error.localizedDescription
+            )
         }
     }
 }

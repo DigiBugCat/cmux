@@ -2308,7 +2308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        LifecycleHookDispatcher.dispatch("before-shutdown")
+        LifecycleHookDispatcher.dispatchSync("before-shutdown")
         isTerminatingApp = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
         stopSessionAutosaveTimer()

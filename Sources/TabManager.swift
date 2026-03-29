@@ -1546,6 +1546,7 @@ class TabManager: ObservableObject {
         }
         if tabs.count <= 1 {
             // Last workspace in this window: close the window (Cmd+Shift+W behavior).
+            LifecycleHookDispatcher.dispatch("workspace-closed", workspaceId: workspace.id.uuidString)
             AppDelegate.shared?.closeMainWindowContainingTabId(workspace.id)
         } else {
             closeWorkspace(workspace)
