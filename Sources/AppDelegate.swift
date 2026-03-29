@@ -2243,6 +2243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
 #endif
+        LifecycleHookDispatcher.dispatch("session-created")
     }
 
 #if DEBUG
@@ -2307,6 +2308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        LifecycleHookDispatcher.dispatch("before-shutdown")
         isTerminatingApp = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
         stopSessionAutosaveTimer()
@@ -2498,6 +2500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         startupSessionSnapshot = nil
         isApplyingStartupSessionRestore = false
         _ = saveSessionSnapshot(includeScrollback: false)
+        LifecycleHookDispatcher.dispatch("after-restore")
     }
 
     private func applySessionWindowSnapshot(

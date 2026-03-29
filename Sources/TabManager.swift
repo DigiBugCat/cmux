@@ -936,6 +936,7 @@ class TabManager: ObservableObject {
                 sendWelcomeWhenReady(to: newWorkspace)
             }
         }
+        LifecycleHookDispatcher.dispatch("workspace-created", workspaceId: newWorkspace.id.uuidString)
         return newWorkspace
     }
 
@@ -1337,6 +1338,7 @@ class TabManager: ObservableObject {
         guard tabs.count > 1 else { return }
         guard let index = tabs.firstIndex(where: { $0.id == workspace.id }) else { return }
         sentryBreadcrumb("workspace.close", data: ["tabCount": tabs.count - 1])
+        LifecycleHookDispatcher.dispatch("workspace-closed", workspaceId: workspace.id.uuidString)
         clearInitialWorkspaceGitProbe(workspaceId: workspace.id)
 
         AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: workspace.id)

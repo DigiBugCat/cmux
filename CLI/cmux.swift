@@ -4889,11 +4889,26 @@ struct CMUXCLI {
             return """
             Usage: cmux set-hook [--list] [--unset <event>] | <event> <command>
 
-            Manage tmux-compat hook definitions.
+            Register shell commands to run on app lifecycle events.
+
+            Events:
+              after-restore      Fired after session restore completes on launch
+              session-created    Fired after app finishes launching
+              workspace-created  Fired when a new workspace is created
+              workspace-closed   Fired when a workspace is closed
+              before-shutdown    Fired before the app terminates
+
+            Environment variables passed to hook commands:
+              CMUX_HOOK_EVENT         The event name that triggered this hook
+              CMUX_HOOK_WORKSPACE_ID  Workspace UUID (workspace-created/workspace-closed only)
 
             Flags:
               --list            List configured hooks
               --unset <event>   Remove a hook by event name
+
+            Example:
+              cmux set-hook after-restore "/path/to/restore-sessions.sh"
+              cmux set-hook before-shutdown "echo shutting down >> /tmp/cmux.log"
             """
         case "popup":
             return """
