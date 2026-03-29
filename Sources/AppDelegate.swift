@@ -2500,7 +2500,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         startupSessionSnapshot = nil
         isApplyingStartupSessionRestore = false
         _ = saveSessionSnapshot(includeScrollback: false)
+        persistRestoredPanelIdMap()
         LifecycleHookDispatcher.dispatch("after-restore")
+    }
+
+    /// Write old→new panel ID mapping to disk so lifecycle hooks can translate
+    /// pre-restart surface UUIDs to their post-restart equivalents.
+    private func persistRestoredPanelIdMap() {
+        var combined: [String: String] = [:]
+        for context in mainWindowContexts.values {
+            for workspace in context.tabManager.tabs {
+                for (oldId, newId) in workspace.restoredPanelIdMap {
+                    combined[oldId.uuidString] = newId.uuidString
+                }
+            }
+        }
+        guard !combined.isEmpty else { return }
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".cmuxterm")
+            .appendingPathComponent("panel-id-restore-map.json")
+        guard let data = try? JSONEncoder().encode(combined) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private func applySessionWindowSnapshot(

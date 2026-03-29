@@ -186,6 +186,7 @@ extension Workspace {
                 oldToNewPanelIds: &oldToNewPanelIds
             )
         }
+        restoredPanelIdMap = oldToNewPanelIds
 
         pruneSurfaceMetadata(validSurfaceIds: Set(panels.keys))
         applySessionDividerPositions(snapshotNode: snapshot.layout, liveNode: bonsplitController.treeSnapshot())
@@ -946,6 +947,10 @@ final class Workspace: Identifiable, ObservableObject {
 
     /// Callback used by TabManager to capture recently closed browser panels for Cmd+Shift+T restore.
     var onClosedBrowserPanel: ((ClosedBrowserPanelRestoreSnapshot) -> Void)?
+
+    /// Panel ID mapping from the most recent session restore (old snapshot ID → new live ID).
+    /// Populated by `restoreSessionSnapshot` and consumed by lifecycle hooks.
+    private(set) var restoredPanelIdMap: [UUID: UUID] = [:]
 
 
     // Closing tabs mutates split layout immediately; terminal views handle their own AppKit
