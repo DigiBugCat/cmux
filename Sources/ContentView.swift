@@ -10046,6 +10046,13 @@ private struct TabItemView: View, Equatable {
             }
         }
 
+        Button("Copy Workspace Ref") {
+            let index = tabManager.tabs.firstIndex(where: { $0.id == tab.id }) ?? 0
+            let ref = "workspace:\(index + 1)"
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(ref, forType: .string)
+        }
+
         Menu(String(localized: "contextMenu.workspaceColor", defaultValue: "Workspace Color")) {
             if tab.customColor != nil {
                 Button {

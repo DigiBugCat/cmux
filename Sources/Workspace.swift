@@ -5112,6 +5112,9 @@ extension Workspace: BonsplitDelegate {
         case .toggleZoom:
             guard let panelId = panelIdFromSurfaceId(tab.id) else { return }
             toggleSplitZoom(panelId: panelId)
+        case .copyRef:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(tab.id.uuid.uuidString, forType: .string)
         @unknown default:
             break
         }
